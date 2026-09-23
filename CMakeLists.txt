@@ -47,6 +47,15 @@ target_include_directories(dat_probe_lib PUBLIC ${CMAKE_SOURCE_DIR})
 target_link_libraries(dat_probe_lib PUBLIC asset_inspector_lib)
 gamecore_warnings(dat_probe_lib)
 
+add_library(lz2k_lib STATIC
+    Tools/Lz2kProbe/Lz2kContainer.cpp
+    Tools/Lz2kProbe/LzhDecoder.cpp
+    Tools/Lz2kProbe/Lz2k.cpp
+)
+target_include_directories(lz2k_lib PUBLIC ${CMAKE_SOURCE_DIR})
+target_link_libraries(lz2k_lib PUBLIC gamecore_assets)
+gamecore_warnings(lz2k_lib)
+
 if(IOS)
     enable_language(OBJCXX)
 
@@ -108,7 +117,7 @@ endif()
 
 add_library(dat_extract_lib STATIC Tools/DatExtract/Extractor.cpp)
 target_include_directories(dat_extract_lib PUBLIC ${CMAKE_SOURCE_DIR})
-target_link_libraries(dat_extract_lib PUBLIC dat_probe_lib)
+target_link_libraries(dat_extract_lib PUBLIC dat_probe_lib lz2k_lib)
 gamecore_warnings(dat_extract_lib)
 
 add_executable(dat_extract Tools/DatExtract/main.cpp)
@@ -118,7 +127,26 @@ if(WIN32)
     target_link_libraries(dat_extract PRIVATE shell32)
 endif()
 
+add_executable(lz2k_probe Tools/Lz2kProbe/main.cpp)
+target_link_libraries(lz2k_probe PRIVATE lz2k_lib dat_probe_lib)
+gamecore_warnings(lz2k_probe)
+if(WIN32)
+    target_link_libraries(lz2k_probe PRIVATE shell32)
+endif()
+
+add_executable(lz2k_decode_test Tools/Lz2kProbe/decode_test_main.cpp)
+target_link_libraries(lz2k_decode_test PRIVATE lz2k_lib dat_probe_lib)
+gamecore_warnings(lz2k_decode_test)
+if(WIN32)
+    target_link_libraries(lz2k_decode_test PRIVATE shell32)
+endif()
+
 enable_testing()
+
+add_executable(lz2k_tests tests/Lz2kTest.cpp)
+target_link_libraries(lz2k_tests PRIVATE lz2k_lib)
+gamecore_warnings(lz2k_tests)
+add_test(NAME lz2k_tests COMMAND lz2k_tests)
 
 add_executable(inspector_tests tests/InspectorTest.cpp)
 target_link_libraries(inspector_tests PRIVATE asset_inspector_lib)

@@ -99,9 +99,11 @@ bool isInside(const std::filesystem::path& child, const std::filesystem::path& p
 }
 
 void printUsage() {
-    std::cerr << "dat_extract --input <dat-file-or-directory> --out <directory> [--ext .ogg,.wav] [--dry-run]\n"
-              << "Copies stored (uncompressed) entries to <out>/<dat name>/<original path>.\n"
-              << "Compressed entries are counted and skipped. The DAT files are opened read-only.\n";
+    std::cerr << "dat_extract --input <dat-file-or-directory> --out <directory> [--ext .ogg,.wav] [--decompress] "
+                 "[--dry-run]\n"
+              << "Copies stored entries to <out>/<dat name>/<original path>.\n"
+              << "--decompress also writes LZ2K entries decompressed; without it they are counted and skipped.\n"
+              << "The DAT files are opened read-only.\n";
 }
 
 }  // namespace
@@ -120,6 +122,8 @@ int main(int argc, char** argv) {
             base.extensions = parseExtensions(gamecore::io::pathToUtf8(args[++i]));
         } else if (arg == "--dry-run") {
             base.dryRun = true;
+        } else if (arg == "--decompress") {
+            base.decompress = true;
         } else {
             printUsage();
             return 1;
@@ -182,7 +186,7 @@ int main(int argc, char** argv) {
             std::cerr << "name table failed validation: " << gamecore::io::pathToUtf8(path) << '\n';
             return 1;
         }
-        plannedBytes += gamecore::extract::storedBytes(item.index, item.names, base.extensions);
+        plannedBytes += gamecore::extract::plannedBytes(item.index, item.names, base.extensions, base.decompress);
         loaded.push_back(std::move(item));
     }
 
@@ -208,22 +212,24 @@ int main(int argc, char** argv) {
         std::ofstream manifest(options.outRoot / "manifest.tsv", std::ios::binary | std::ios::trunc);
         std::vector<std::string> errors;
         const auto stats =
-            gamecore::extract::extractStored(item.file.source(), item.index, item.names, options, manifest, errors);
+            gamecore::extract::extractEntries(item.file.source(), item.index, item.names, options, manifest, errors);
         for (const auto& message : errors) {
             log << datName << ": " << message << '\n';
         }
-        std::cout << datName << ": written=" << stats.written << " reused=" << stats.reused
-                  << " MiB=" << (stats.bytes >> 20) << " skipped_compressed=" << stats.skippedCompressed
+        std::cout << datName << ": written=" << stats.written << " decompressed=" << stats.decompressed
+                  << " reused=" << stats.reused << " MiB=" << (stats.bytes >> 20)
+                  << " skipped_compressed=" << stats.skippedCompressed
                   << " skipped_filter=" << stats.skippedFilter << " rejected=" << stats.rejectedPaths
                   << " errors=" << stats.errors << '\n';
         total.written += stats.written;
+        total.decompressed += stats.decompressed;
         total.reused += stats.reused;
         total.bytes += stats.bytes;
         total.skippedCompressed += stats.skippedCompressed;
         total.rejectedPaths += stats.rejectedPaths;
         total.errors += stats.errors;
     }
-    std::cout << "total: written=" << total.written << " reused=" << total.reused << " MiB=" << (total.bytes >> 20)
+    std::cout << "total: written=" << total.written << " decompressed=" << total.decompressed << " reused=" << total.reused << " MiB=" << (total.bytes >> 20)
               << " skipped_compressed=" << total.skippedCompressed << " rejected=" << total.rejectedPaths
               << " errors=" << total.errors << '\n';
     return (total.errors == 0 && total.rejectedPaths == 0) ? 0 : 2;

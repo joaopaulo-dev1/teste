@@ -2,6 +2,7 @@
 
 #include "GameCore/AssetSystem/ReadOnlyFile.hpp"
 #include "Tools/DatProbe/ContentCheck.hpp"
+#include "Tools/Lz2kProbe/Lz2k.hpp"
 
 #include <array>
 #include <cctype>
@@ -90,31 +91,39 @@ bool sanitizeRelativePath(const std::string& path, std::filesystem::path& out, s
 
 bool isStoredEntry(const dat::RawEntry& entry) { return (entry.flags & 0xffu) == 0 && entry.b == entry.c; }
 
-std::uint64_t storedBytes(const dat::DatIndex& index, const dat::NameTable& names,
-                          const std::set<std::string>& extensions) {
+bool isLz2kEntry(const dat::RawEntry& entry) { return (entry.flags & 0xffu) == 2; }
+
+std::uint64_t plannedBytes(const dat::DatIndex& index, const dat::NameTable& names,
+                           const std::set<std::string>& extensions, bool includeLz2k) {
     std::uint64_t total = 0;
     for (std::size_t id = 0; id < names.fileIdToNode.size() && id < index.entries.size(); ++id) {
         const int node = names.fileIdToNode[id];
-        if (node < 0 || !isStoredEntry(index.entries[id])) {
+        if (node < 0) {
             continue;
         }
+        const auto& entry = index.entries[id];
         if (!extensions.empty() &&
             extensions.count(dat::lowerExtension(names.nodes[static_cast<std::size_t>(node)].name)) == 0) {
             continue;
         }
-        total += index.entries[id].b;
+        if (isStoredEntry(entry)) {
+            total += entry.b;
+        } else if (includeLz2k && isLz2kEntry(entry)) {
+            total += entry.c;
+        }
     }
     return total;
 }
 
-ExtractStats extractStored(const io::ByteSource& file,
-                           const dat::DatIndex& index,
-                           const dat::NameTable& names,
-                           const ExtractOptions& options,
-                           std::ostream& manifest,
-                           std::vector<std::string>& errors) {
+ExtractStats extractEntries(const io::ByteSource& file,
+                            const dat::DatIndex& index,
+                            const dat::NameTable& names,
+                            const ExtractOptions& options,
+                            std::ostream& manifest,
+                            std::vector<std::string>& errors) {
     ExtractStats stats;
     std::vector<std::uint8_t> buffer(1u << 20);
+    std::vector<std::uint8_t> unpacked;
     manifest << "id\tpath\tbytes\tlabel\tstatus\n";
     for (std::size_t id = 0; id < names.fileIdToNode.size() && id < index.entries.size(); ++id) {
         const int node = names.fileIdToNode[id];
@@ -127,10 +136,13 @@ ExtractStats extractStored(const io::ByteSource& file,
             ++stats.skippedFilter;
             continue;
         }
-        if (!isStoredEntry(entry)) {
+        const bool stored = isStoredEntry(entry);
+        const bool packed = !stored && options.decompress && isLz2kEntry(entry);
+        if (!stored && !packed) {
             ++stats.skippedCompressed;
             continue;
         }
+        const std::uint64_t outSize = stored ? entry.b : entry.c;
         const std::string logical = dat::fullPath(names, node);
         std::filesystem::path relative;
         std::string reason;
@@ -140,17 +152,38 @@ ExtractStats extractStored(const io::ByteSource& file,
             continue;
         }
         const std::filesystem::path target = options.outRoot / relative;
-        const std::string label = dat::labelEntry(file, entry);
+        const std::uint64_t offset = dat::entryOffset(entry, dat::OffsetRule::Shl8OrHighByte);
         if (options.dryRun) {
-            manifest << id << '\t' << logical << '\t' << entry.b << '\t' << label << "\tdry-run\n";
+            const std::string label = stored ? dat::labelEntry(file, entry) : std::string("lz2k");
+            manifest << id << '\t' << logical << '\t' << outSize << '\t' << label << "\tdry-run\n";
             ++stats.written;
-            stats.bytes += entry.b;
+            stats.bytes += outSize;
             continue;
         }
-        if (sameSizeFileExists(target, entry.b)) {
-            manifest << id << '\t' << logical << '\t' << entry.b << '\t' << label << "\treused\n";
+        if (sameSizeFileExists(target, outSize)) {
+            manifest << id << '\t' << logical << '\t' << outSize << "\t-\treused\n";
             ++stats.reused;
             continue;
+        }
+
+        std::string label;
+        if (packed) {
+            io::SliceBytes sliceStorage;
+            const auto slice = io::sliceOf(file, offset, entry.b, sliceStorage);
+            std::string failure;
+            if (!lz2k::decompressEntry(slice, entry.c, unpacked, failure)) {
+                ++stats.errors;
+                errors.push_back("decompress failed for " + logical + ": " + failure);
+                continue;
+            }
+            io::MemoryBytes unpackedStorage;
+            const auto unpackedSource = io::sourceFromSpan(unpacked, unpackedStorage);
+            dat::RawEntry view;
+            view.b = entry.c;
+            view.c = entry.c;
+            label = dat::labelEntry(unpackedSource, view);
+        } else {
+            label = dat::labelEntry(file, entry);
         }
         std::error_code ec;
         std::filesystem::create_directories(target.parent_path(), ec);
@@ -167,9 +200,12 @@ ExtractStats extractStored(const io::ByteSource& file,
             if (!out) {
                 ok = false;
             }
-            const std::uint64_t offset = dat::entryOffset(entry, dat::OffsetRule::Shl8OrHighByte);
+            if (ok && packed) {
+                out.write(reinterpret_cast<const char*>(unpacked.data()), static_cast<std::streamsize>(unpacked.size()));
+                ok = static_cast<bool>(out);
+            }
             std::uint64_t copied = 0;
-            while (ok && copied < entry.b) {
+            while (ok && stored && copied < entry.b) {
                 const std::size_t chunk = static_cast<std::size_t>(
                     entry.b - copied < buffer.size() ? entry.b - copied : buffer.size());
                 if (!io::readExact(file, offset + copied, buffer.data(), chunk)) {
@@ -191,12 +227,15 @@ ExtractStats extractStored(const io::ByteSource& file,
         if (!ok) {
             std::filesystem::remove(partial, ec);
             ++stats.errors;
-            errors.push_back("copy failed for " + logical);
+            errors.push_back("write failed for " + logical);
             continue;
         }
-        manifest << id << '\t' << logical << '\t' << entry.b << '\t' << label << "\twritten\n";
+        manifest << id << '\t' << logical << '\t' << outSize << '\t' << label << (packed ? "\tdecompressed\n" : "\twritten\n");
         ++stats.written;
-        stats.bytes += entry.b;
+        if (packed) {
+            ++stats.decompressed;
+        }
+        stats.bytes += outSize;
     }
     return stats;
 }

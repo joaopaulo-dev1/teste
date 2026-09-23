@@ -17,12 +17,14 @@ struct ExtractOptions {
     std::filesystem::path outRoot;
     std::set<std::string> extensions;
     bool dryRun = false;
+    bool decompress = false;
 };
 
 struct ExtractStats {
     std::uint64_t written = 0;
     std::uint64_t reused = 0;
     std::uint64_t bytes = 0;
+    std::uint64_t decompressed = 0;
     std::uint64_t skippedCompressed = 0;
     std::uint64_t skippedFilter = 0;
     std::uint64_t rejectedPaths = 0;
@@ -33,11 +35,16 @@ struct ExtractStats {
 bool sanitizeRelativePath(const std::string& path, std::filesystem::path& out, std::string& reason);
 
 bool isStoredEntry(const dat::RawEntry& entry);
+bool isLz2kEntry(const dat::RawEntry& entry);
 
-std::uint64_t storedBytes(const dat::DatIndex& index, const dat::NameTable& names, const std::set<std::string>& extensions);
+// Bytes that extraction will write: stored entries, plus LZ2K entries at their original size when
+// `includeLz2k` is set.
+std::uint64_t plannedBytes(const dat::DatIndex& index, const dat::NameTable& names,
+                           const std::set<std::string>& extensions, bool includeLz2k);
 
-// Copies stored (uncompressed) entries only. Compressed entries are counted and left untouched.
-ExtractStats extractStored(const io::ByteSource& file,
+// Copies stored entries; with options.decompress also writes LZ2K entries decompressed.
+// Anything else is counted as skipped and left untouched.
+ExtractStats extractEntries(const io::ByteSource& file,
                            const dat::DatIndex& index,
                            const dat::NameTable& names,
                            const ExtractOptions& options,
