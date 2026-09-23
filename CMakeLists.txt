@@ -56,6 +56,13 @@ target_include_directories(lz2k_lib PUBLIC ${CMAKE_SOURCE_DIR})
 target_link_libraries(lz2k_lib PUBLIC gamecore_assets)
 gamecore_warnings(lz2k_lib)
 
+add_library(ghg_lib STATIC
+    Tools/GhgProbe/GhgScan.cpp
+    Tools/GhgProbe/PngWriter.cpp
+)
+target_include_directories(ghg_lib PUBLIC ${CMAKE_SOURCE_DIR})
+gamecore_warnings(ghg_lib)
+
 if(IOS)
     enable_language(OBJCXX)
 
@@ -134,6 +141,13 @@ if(WIN32)
     target_link_libraries(lz2k_probe PRIVATE shell32)
 endif()
 
+add_executable(ghg_probe Tools/GhgProbe/main.cpp)
+target_link_libraries(ghg_probe PRIVATE ghg_lib gamecore_assets)
+gamecore_warnings(ghg_probe)
+if(WIN32)
+    target_link_libraries(ghg_probe PRIVATE shell32)
+endif()
+
 add_executable(lz2k_decode_test Tools/Lz2kProbe/decode_test_main.cpp)
 target_link_libraries(lz2k_decode_test PRIVATE lz2k_lib dat_probe_lib)
 gamecore_warnings(lz2k_decode_test)
@@ -142,6 +156,11 @@ if(WIN32)
 endif()
 
 enable_testing()
+
+add_executable(ghg_tests tests/GhgTest.cpp)
+target_link_libraries(ghg_tests PRIVATE ghg_lib)
+gamecore_warnings(ghg_tests)
+add_test(NAME ghg_tests COMMAND ghg_tests)
 
 add_executable(lz2k_tests tests/Lz2kTest.cpp)
 target_link_libraries(lz2k_tests PRIVATE lz2k_lib)
