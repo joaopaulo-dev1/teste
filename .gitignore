@@ -1,0 +1,15 @@
+build/
+build-*/
+extracted/
+Payload/
+*.ipa
+
+# Proprietary game data never goes into the repository.
+*.[Dd][Aa][Tt]
+*.[Dd][Aa][Tt][0-9]
+*.ogg
+*.wav
+*.nxg_textures
+*.tex
+*.gsc
+*.an4

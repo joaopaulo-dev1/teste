@@ -1,0 +1,72 @@
+name: ios
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core-tests:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure host build
+        run: cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build host tools and tests
+        run: cmake --build build-host --parallel
+
+      - name: Run tests
+        run: ctest --test-dir build-host --output-on-failure
+
+  ipa:
+    runs-on: macos-14
+    needs: core-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          cmake --version
+
+      - name: Configure iOS (Xcode generator)
+        run: >
+          cmake -S . -B build-ios -G Xcode
+          -DCMAKE_SYSTEM_NAME=iOS
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
+          -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
+
+      - name: Build app (unsigned)
+        run: >
+          cmake --build build-ios --config Release --target LB3Port --
+          -sdk iphoneos
+          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_REQUIRED=NO
+          CODE_SIGN_IDENTITY=""
+
+      - name: Package unsigned .ipa
+        run: |
+          set -euo pipefail
+          APP=$(find build-ios -type d -name 'LB3Port.app' -path '*Release-iphoneos*' | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "LB3Port.app not found" >&2
+            find build-ios -name '*.app' >&2 || true
+            exit 1
+          fi
+          echo "app: $APP"
+          lipo -info "$APP/LB3Port"
+          plutil -p "$APP/Info.plist"
+          rm -rf Payload
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry LB3Port-unsigned.ipa Payload
+          ls -lh LB3Port-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LB3Port-unsigned-ipa
+          path: LB3Port-unsigned.ipa
+          if-no-files-found: error
